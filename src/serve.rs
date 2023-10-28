@@ -10,12 +10,10 @@ use std::{
     time::Duration,
 };
 
-use crate::ser::serialize_array;
-
 use self::{
     de::deserialize,
     redis_value::RedisValue,
-    ser::{serialize_bulk_str, serialize_null, serialize_str},
+    ser::{serialize_array, serialize_null, serialize_str},
 };
 
 fn main() {
@@ -104,30 +102,8 @@ fn process_thread(stream: TcpStream, _thread_id: usize, server: Arc<Mutex<Server
             };
             match &command.to_uppercase() as &_ {
                 "SUBSCRIBE" => {
-                    if let Some((mut server_lock, sub)) = server
-                        .lock()
-                        .ok()
-                        .zip(req.get(1).and_then(RedisValue::as_str))
-                    {
-                        let (tx, rx) = std::sync::mpsc::channel();
-
-                        server_lock
-                            .subscribers
-                            .entry(sub.to_string())
-                            .or_default()
-                            .push(tx);
-
-                        if let Err(e) = (|| -> std::io::Result<()> {
-                            reader.write_all(b"*3\r\n")?;
-                            serialize_bulk_str(&mut reader, "subscribe")?;
-                            serialize_bulk_str(&mut reader, sub)?;
-                            reader.write_all(b":1\r\n")?;
-                            Ok(())
-                        })() {
-                            println!("Error: {e:?}");
-                        }
-                        drop(server_lock);
-                        subscribe_loop(&mut reader, &server, rx).unwrap();
+                    if let Err(e) = subscribe(&mut reader, &req, &server) {
+                        respond_error(&mut reader, &e.to_string());
                     }
                 }
                 "PUBLISH" => {
@@ -170,6 +146,36 @@ fn process_thread(stream: TcpStream, _thread_id: usize, server: Arc<Mutex<Server
             }
         }
     }
+}
+
+fn subscribe(
+    con: &mut TcpStream,
+    req: &[RedisValue],
+    server: &Arc<Mutex<Server>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut server_lock = server.lock().map_err(|e| e.to_string())?;
+    let Some(sub) = req.get(1).and_then(RedisValue::as_str) else {
+        return Err("Lacking channel name".into());
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+
+    server_lock
+        .subscribers
+        .entry(sub.to_string())
+        .or_default()
+        .push(tx);
+
+    serialize_array(
+        con,
+        &[
+            RedisValue::from("subscribe"),
+            RedisValue::from(sub),
+            RedisValue::Integer(1),
+        ],
+    )?;
+    drop(server_lock);
+    subscribe_loop(con, &server, rx).unwrap();
+    Ok(())
 }
 
 fn subscribe_loop(

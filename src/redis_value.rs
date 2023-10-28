@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) enum RedisValue {
     Null,
     Integer(i64),
@@ -15,5 +15,23 @@ impl RedisValue {
             Self::Str(s) => Some(s),
             _ => None,
         }
+    }
+}
+
+impl From<&RedisValue> for RedisValue {
+    fn from(value: &RedisValue) -> Self {
+        value.clone()
+    }
+}
+
+impl From<&str> for RedisValue {
+    fn from(value: &str) -> Self {
+        RedisValue::Str(value.to_string())
+    }
+}
+
+impl From<&&str> for RedisValue {
+    fn from(value: &&str) -> Self {
+        RedisValue::Str(value.to_string())
     }
 }

@@ -5,7 +5,7 @@ mod de;
 mod redis_value;
 mod ser;
 
-use self::{de::deserialize, ser::serialize_array};
+use self::{de::deserialize, ser::serialize_str_array};
 
 // use std::time::Duration;
 
@@ -21,22 +21,22 @@ fn main() {
 fn tcp_client() -> Result<(), Box<dyn std::error::Error>> {
     let mut con = TcpStream::connect("localhost:7878")?;
     println!("Asking to GET hey");
-    serialize_array(&mut con, &["GET", "hey"])?;
+    serialize_str_array(&mut con, &["GET", "hey"])?;
     let mut buf = [0u8; 128];
     let resp = deserialize(&mut con)?;
     println!("Got some answer: {resp:?}");
 
     println!("Asking to SET hey");
-    serialize_array(&mut con, &["SET", "hey", "42"])?;
+    serialize_str_array(&mut con, &["SET", "hey", "42"])?;
     let resp = deserialize(&mut con)?;
     println!("Got some answer: {resp:?}");
 
     println!("Asking to GET hey again");
-    serialize_array(&mut con, &["GET", "hey"])?;
+    serialize_str_array(&mut con, &["GET", "hey"])?;
     let resp = deserialize(&mut con)?;
     println!("Got some answer: {resp:?}");
 
-    serialize_array(&mut con, &["subscribe", "channel"])?;
+    serialize_str_array(&mut con, &["subscribe", "channel"])?;
     loop {
         let resp = deserialize(&mut con)?;
         println!("Got some answer: {resp:?}");
