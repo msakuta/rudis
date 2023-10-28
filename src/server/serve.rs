@@ -2,36 +2,44 @@ use std::{
     collections::HashMap,
     io::{Read, Write},
     net::{TcpListener, TcpStream},
-    sync::{Arc, Mutex},
+    sync::{mpsc::Receiver, Arc, Mutex},
     time::Duration,
 };
 
 fn main() {
     let listener = TcpListener::bind("0.0.0.0:7878").unwrap();
 
-    let subscribers = Arc::new(Mutex::new(HashMap::new()));
+    let server = Arc::new(Mutex::new(Server::default()));
 
     let mut thread_id = 0;
 
-    let subs = subscribers.clone();
-    std::thread::spawn(move || clock(subs));
+    let server_clone = server.clone();
+    std::thread::spawn(move || clock(server_clone));
 
     for stream in listener.incoming() {
         let Ok(stream) = stream else { continue };
-        let subs = subscribers.clone();
-        std::thread::spawn(move || process_thread(stream, thread_id, subs));
+        let server_clone = server.clone();
+        std::thread::spawn(move || process_thread(stream, thread_id, server_clone));
         thread_id += 1;
     }
 }
 
-fn clock(subscribers: Arc<Mutex<Subscribers>>) {
+type Subscribers = HashMap<String, Vec<std::sync::mpsc::Sender<String>>>;
+
+#[derive(Default)]
+struct Server {
+    subscribers: Subscribers,
+    data: HashMap<String, String>,
+}
+
+fn clock(server: Arc<Mutex<Server>>) {
     let mut time = 0;
     loop {
         'lock: {
-            let Ok(lock) = subscribers.lock() else {
+            let Ok(lock) = server.lock() else {
                 break 'lock;
             };
-            let Some(channel) = lock.get("channel") else {
+            let Some(channel) = lock.subscribers.get("channel") else {
                 break 'lock;
             };
             for tx in channel {
@@ -45,13 +53,10 @@ fn clock(subscribers: Arc<Mutex<Subscribers>>) {
     }
 }
 
-type Subscribers = HashMap<String, Vec<std::sync::mpsc::Sender<String>>>;
-
-fn process_thread(stream: TcpStream, _thread_id: usize, subscribers: Arc<Mutex<Subscribers>>) {
+fn process_thread(stream: TcpStream, _thread_id: usize, server: Arc<Mutex<Server>>) {
     println!("Connection established!");
 
     let mut reader = stream;
-    println!("Connection established!");
 
     // let mut buf = vec![0u8; 32];
     // while let Ok(_) = reader.read(&mut buf) {
@@ -69,45 +74,103 @@ fn process_thread(stream: TcpStream, _thread_id: usize, subscribers: Arc<Mutex<S
 
     // println!("Request: {redis_request:?}");
 
-    let redis_request = match deserialize(&mut reader) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("Deserialize error: {e:?}");
-            return;
-        }
-    };
+    'parse_commands: loop {
+        let redis_request = match deserialize(&mut reader) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("Deserialize error: {e:?}");
+                return;
+            }
+        };
 
-    println!("Request: {redis_request:?}");
+        println!("Request: {redis_request:?}");
 
-    let (tx, rx) = std::sync::mpsc::channel();
+        if let RedisValue::Array(req) = redis_request {
+            let Some(command) = req.get(0).and_then(RedisValue::as_str) else {
+                eprintln!("Client request didn't start with a string");
+                break 'parse_commands;
+            };
+            match command {
+                "SUBSCRIBE" => {
+                    let rx = server
+                        .lock()
+                        .ok()
+                        .zip(req.get(1).and_then(RedisValue::as_str))
+                        .map(|(mut server_lock, sub)| {
+                            let (tx, rx) = std::sync::mpsc::channel();
 
-    if let RedisValue::Map(map) = redis_request {
-        if let Some(sub) = map.get("SUBSCRIBE").and_then(RedisValue::as_str) {
-            if let Ok(mut subscribers) = subscribers.lock() {
-                subscribers.entry(sub.to_string()).or_default().push(tx);
+                            server_lock
+                                .subscribers
+                                .entry(sub.to_string())
+                                .or_default()
+                                .push(tx);
 
-                if let Err(e) = (|| -> std::io::Result<()> {
-                    reader.write_all(b"*3\r\n")?;
-                    serialize_bulk_str(&mut reader, "subscribe")?;
-                    serialize_bulk_str(&mut reader, sub)?;
-                    reader.write_all(b":1\r\n")?;
-                    Ok(())
-                })() {
-                    println!("Error: {e:?}");
+                            if let Err(e) = (|| -> std::io::Result<()> {
+                                reader.write_all(b"*3\r\n")?;
+                                serialize_bulk_str(&mut reader, "subscribe")?;
+                                serialize_bulk_str(&mut reader, sub)?;
+                                reader.write_all(b":1\r\n")?;
+                                Ok(())
+                            })() {
+                                println!("Error: {e:?}");
+                            }
+                            rx
+                        });
+                    if let Some(rx) = rx {
+                        subscribe_loop(&mut reader, &server, rx).unwrap();
+                    }
                 }
+                "GET" => {
+                    if let Some((server, key)) = server
+                        .lock()
+                        .ok()
+                        .zip(req.get(1).and_then(RedisValue::as_str))
+                    {
+                        if let Some(value) = server.data.get(key) {
+                            if let Err(e) = serialize_str(&mut reader, value) {
+                                eprintln!("Error: {e:?}");
+                            }
+                        } else {
+                            if let Err(e) = serialize_null(&mut reader) {
+                                eprintln!("Error: {e:?}");
+                            }
+                            println!("Wrote null");
+                        }
+                    }
+                }
+                "SET" => {
+                    if let Some(((mut server, key), value)) = server
+                        .lock()
+                        .ok()
+                        .zip(req.get(1).and_then(RedisValue::as_str))
+                        .zip(req.get(2).and_then(RedisValue::as_str))
+                    {
+                        server.data.insert(key.to_string(), value.to_string());
+                        if let Err(e) = serialize_str(&mut reader, "OK") {
+                            eprintln!("Error: {e:?}");
+                        }
+                    }
+                }
+                _ => eprintln!("Unknown command: {command:?}"),
             }
         }
     }
+}
 
+fn subscribe_loop(
+    con: &mut TcpStream,
+    server: &Arc<Mutex<Server>>,
+    rx: Receiver<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
     while let Ok(data) = rx.recv() {
         println!("recv: {data:?}");
-        if let Ok(subscribers) = subscribers.lock() {
-            for (channel, _) in subscribers.iter() {
+        if let Ok(server) = server.lock() {
+            for (channel, _) in server.subscribers.iter() {
                 if let Err(e) = (|| -> std::io::Result<()> {
-                    reader.write_all(b"*3\r\n")?;
-                    serialize_bulk_str(&mut reader, "message")?;
-                    serialize_bulk_str(&mut reader, channel)?;
-                    serialize_bulk_str(&mut reader, &data)?;
+                    con.write_all(b"*3\r\n")?;
+                    serialize_bulk_str(con, "message")?;
+                    serialize_bulk_str(con, channel)?;
+                    serialize_bulk_str(con, &data)?;
                     Ok(())
                 })() {
                     println!("Error: {e:?}");
@@ -117,6 +180,7 @@ fn process_thread(stream: TcpStream, _thread_id: usize, subscribers: Arc<Mutex<S
     }
 
     // stream.write_all(SAMPLE_RESPONSE);
+    Ok(())
 }
 
 #[allow(dead_code)]
@@ -129,6 +193,10 @@ fn serialize_bulk_str(f: &mut impl std::io::Write, s: &str) -> std::io::Result<(
 fn serialize_str(f: &mut impl std::io::Write, s: &str) -> std::io::Result<()> {
     write!(f, "+{}\r\n", s)?;
     Ok(())
+}
+
+fn serialize_null(f: &mut impl std::io::Write) -> std::io::Result<()> {
+    write!(f, "$-1\r\n")
 }
 
 #[allow(dead_code)]
@@ -147,6 +215,7 @@ fn serialize_map(
 #[derive(Debug)]
 enum RedisValue {
     Str(String),
+    Array(Vec<RedisValue>),
     Map(HashMap<String, RedisValue>),
 }
 
@@ -175,9 +244,32 @@ fn deserialize(f: &mut impl Read) -> Result<RedisValue, Box<dyn std::error::Erro
             println!("Str(utf-8): {str}");
             Ok(RedisValue::Str(str))
         }
+        b'+' => {
+            // simple string
+            let mut str_buf = vec![0u8; 2];
+            f.read_exact(&mut str_buf)?;
+            loop {
+                if str_buf[str_buf.len() - 2..] == b"\r\n"[..] {
+                    return Ok(RedisValue::Str(
+                        std::str::from_utf8(&str_buf[..str_buf.len() - 2])?.to_string(),
+                    ));
+                }
+                let mut next_buf = [0u8; 1];
+                let len = f.read(&mut next_buf)?;
+                str_buf.extend_from_slice(&next_buf[..len]);
+            }
+        }
         b'*' => {
+            // array
             let len = parse_len(f)?;
-            println!("len: {len}");
+            println!("array len: {len}");
+            let v = (0..len).map(|_| deserialize(f)).collect::<Result<_, _>>()?;
+            Ok(RedisValue::Array(v))
+        }
+        b'%' => {
+            // map
+            let len = parse_len(f)?;
+            println!("map len: {len}");
             let mut hash = HashMap::new();
             for _ in 0..len / 2 {
                 let RedisValue::Str(k) = deserialize(f)? else {
