@@ -25,8 +25,8 @@ fn main() {
 
     let mut thread_id = 0;
 
-    let server_clone = server.clone();
-    std::thread::spawn(move || clock(server_clone));
+    // let server_clone = server.clone();
+    // std::thread::spawn(move || clock(server_clone));
 
     for stream in listener.incoming() {
         let Ok(stream) = stream else { continue };
@@ -86,7 +86,7 @@ fn process_thread(stream: TcpStream, _thread_id: usize, server: Arc<Mutex<Server
 
     // println!("Request: {redis_request:?}");
 
-    'parse_commands: loop {
+    loop {
         let redis_request = match deserialize(&mut reader) {
             Ok(r) => r,
             Err(e) => {
@@ -100,36 +100,50 @@ fn process_thread(stream: TcpStream, _thread_id: usize, server: Arc<Mutex<Server
         if let RedisValue::Array(req) = redis_request {
             let Some(command) = req.get(0).and_then(RedisValue::as_str) else {
                 eprintln!("Client request didn't start with a string");
-                break 'parse_commands;
+                continue;
             };
             match &command.to_uppercase() as &_ {
                 "SUBSCRIBE" => {
-                    let rx = server
+                    if let Some((mut server_lock, sub)) = server
                         .lock()
                         .ok()
                         .zip(req.get(1).and_then(RedisValue::as_str))
-                        .map(|(mut server_lock, sub)| {
-                            let (tx, rx) = std::sync::mpsc::channel();
+                    {
+                        let (tx, rx) = std::sync::mpsc::channel();
 
-                            server_lock
-                                .subscribers
-                                .entry(sub.to_string())
-                                .or_default()
-                                .push(tx);
+                        server_lock
+                            .subscribers
+                            .entry(sub.to_string())
+                            .or_default()
+                            .push(tx);
 
-                            if let Err(e) = (|| -> std::io::Result<()> {
-                                reader.write_all(b"*3\r\n")?;
-                                serialize_bulk_str(&mut reader, "subscribe")?;
-                                serialize_bulk_str(&mut reader, sub)?;
-                                reader.write_all(b":1\r\n")?;
-                                Ok(())
-                            })() {
-                                println!("Error: {e:?}");
-                            }
-                            rx
-                        });
-                    if let Some(rx) = rx {
+                        if let Err(e) = (|| -> std::io::Result<()> {
+                            reader.write_all(b"*3\r\n")?;
+                            serialize_bulk_str(&mut reader, "subscribe")?;
+                            serialize_bulk_str(&mut reader, sub)?;
+                            reader.write_all(b":1\r\n")?;
+                            Ok(())
+                        })() {
+                            println!("Error: {e:?}");
+                        }
+                        drop(server_lock);
                         subscribe_loop(&mut reader, &server, rx).unwrap();
+                    }
+                }
+                "PUBLISH" => {
+                    if let Some(((server_lock, channel), message)) = server
+                        .lock()
+                        .ok()
+                        .zip(req.get(1).and_then(RedisValue::as_str))
+                        .zip(req.get(2).and_then(RedisValue::as_str))
+                    {
+                        if let Some(sub) = server_lock.subscribers.get(channel) {
+                            for tx in sub {
+                                if let Err(e) = tx.send(message.to_string()) {
+                                    eprintln!("Error sending a message to a subscriber: {e:?}");
+                                }
+                            }
+                        }
                     }
                 }
                 "GET" => {
