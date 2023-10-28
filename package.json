@@ -4,7 +4,8 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "pub": "node scripts/pub.js"
+    "pub": "node scripts/pub.js",
+    "sub": "node scripts/sub.js"
   },
   "author": "",
   "license": "ISC",
