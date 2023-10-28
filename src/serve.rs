@@ -131,18 +131,36 @@ fn process_thread(stream: TcpStream, _thread_id: usize, server: Arc<Mutex<Server
                     }
                 }
                 "PUBLISH" => {
-                    if let Some(((server_lock, channel), message)) = server
-                        .lock()
-                        .ok()
-                        .zip(req.get(1).and_then(RedisValue::as_str))
-                        .zip(req.get(2).and_then(RedisValue::as_str))
-                    {
-                        if let Some(sub) = server_lock.subscribers.get(channel) {
-                            for tx in sub {
-                                if let Err(e) = tx.send(message.to_string()) {
-                                    eprintln!("Error sending a message to a subscriber: {e:?}");
-                                }
+                    let Some(channel) = req.get(1).and_then(RedisValue::as_str) else {
+                        respond_error(&mut reader, "ERROR: Lacking channel name");
+                        continue;
+                    };
+                    let server_lock = match server.try_lock() {
+                        Ok(s) => s,
+                        Err(e) => {
+                            respond_error(&mut reader, &format!("ERROR: Server lock failed {e:?}"));
+                            continue;
+                        }
+                    };
+                    let Some(message) = req.get(2).and_then(RedisValue::as_str) else {
+                        respond_error(&mut reader, "Message was not supplied or was not a string");
+                        continue;
+                    };
+                    if let Some(sub) = server_lock.subscribers.get(channel) {
+                        eprintln!("publishing to {} subscribers...", sub.len());
+                        for tx in sub {
+                            if let Err(e) = tx.send(message.to_string()) {
+                                eprintln!("Error sending a message to a subscriber: {e:?}");
                             }
+                        }
+                        if let Err(e) = serialize_str(&mut reader, "OK") {
+                            eprintln!("Error: {e:?}");
+                        }
+                    } else {
+                        eprintln!("There were no subscribers to {}", channel);
+                        // Having no subscribers is not an error.
+                        if let Err(e) = serialize_str(&mut reader, "OK") {
+                            eprintln!("Error: {e:?}");
                         }
                     }
                 }
@@ -204,6 +222,15 @@ fn subscribe_loop(
 
     // stream.write_all(SAMPLE_RESPONSE);
     Ok(())
+}
+
+fn respond_error(stream: &mut impl Write, msg: &str) {
+    eprintln!("Response error: {msg}");
+    // If we fail in an attempt to respond with an error, there is not much we can do but
+    // print int to the server's terminal (or probably on a log).
+    if let Err(e) = write!(stream, "-{msg}\r\n") {
+        eprintln!("Error: {e:?}");
+    }
 }
 
 #[allow(dead_code)]

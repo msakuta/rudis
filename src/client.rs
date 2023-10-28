@@ -14,8 +14,8 @@ use self::{de::deserialize, ser::serialize_array};
 use std::{io::Read, net::TcpStream};
 
 fn main() {
-    tcp_client().unwrap();
-    // do_something().unwrap();
+    // tcp_client().unwrap();
+    do_something().unwrap();
 }
 
 fn tcp_client() -> Result<(), Box<dyn std::error::Error>> {
