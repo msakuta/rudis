@@ -9,7 +9,7 @@ pub(crate) fn deserialize(f: &mut impl Read) -> Result<RedisValue, Box<dyn std::
         b'$' => {
             // string
             let len = parse_len(f)?;
-            println!("str len: {len}");
+            // println!("str len: {len}");
             if len < 0 {
                 return Ok(RedisValue::Null);
             }
@@ -19,7 +19,7 @@ pub(crate) fn deserialize(f: &mut impl Read) -> Result<RedisValue, Box<dyn std::
                 return Err("String not followed by a CRLF".into());
             }
             let str = String::from_utf8(str_buf)?;
-            println!("Str(utf-8): {str}");
+            // println!("Str(utf-8): {str}");
             Ok(RedisValue::Str(str))
         }
         b'+' => {
@@ -40,20 +40,20 @@ pub(crate) fn deserialize(f: &mut impl Read) -> Result<RedisValue, Box<dyn std::
         b'*' => {
             // array
             let len = parse_len(f)?;
-            println!("array len: {len}");
+            // println!("array len: {len}");
             let v = (0..len).map(|_| deserialize(f)).collect::<Result<_, _>>()?;
             Ok(RedisValue::Array(v))
         }
         b'%' => {
             // map
             let len = parse_len(f)?;
-            println!("map len: {len}");
+            // println!("map len: {len}");
             let mut hash = HashMap::new();
             for _ in 0..len / 2 {
                 let RedisValue::Str(k) = deserialize(f)? else {
                     return Err("Key is not a string".into());
                 };
-                println!("key: {k:?}");
+                // println!("key: {k:?}");
                 let v = deserialize(f)?;
                 hash.insert(k, v);
             }

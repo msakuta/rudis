@@ -131,37 +131,8 @@ fn process_thread(stream: TcpStream, _thread_id: usize, server: Arc<Mutex<Server
                     }
                 }
                 "PUBLISH" => {
-                    let Some(channel) = req.get(1).and_then(RedisValue::as_str) else {
-                        respond_error(&mut reader, "ERROR: Lacking channel name");
-                        continue;
-                    };
-                    let server_lock = match server.try_lock() {
-                        Ok(s) => s,
-                        Err(e) => {
-                            respond_error(&mut reader, &format!("ERROR: Server lock failed {e:?}"));
-                            continue;
-                        }
-                    };
-                    let Some(message) = req.get(2).and_then(RedisValue::as_str) else {
-                        respond_error(&mut reader, "Message was not supplied or was not a string");
-                        continue;
-                    };
-                    if let Some(sub) = server_lock.subscribers.get(channel) {
-                        eprintln!("publishing to {} subscribers...", sub.len());
-                        for tx in sub {
-                            if let Err(e) = tx.send(message.to_string()) {
-                                eprintln!("Error sending a message to a subscriber: {e:?}");
-                            }
-                        }
-                        if let Err(e) = serialize_str(&mut reader, "OK") {
-                            eprintln!("Error: {e:?}");
-                        }
-                    } else {
-                        eprintln!("There were no subscribers to {}", channel);
-                        // Having no subscribers is not an error.
-                        if let Err(e) = serialize_str(&mut reader, "OK") {
-                            eprintln!("Error: {e:?}");
-                        }
+                    if let Err(e) = publish(&mut reader, &req, &server) {
+                        respond_error(&mut reader, &e.to_string());
                     }
                 }
                 "GET" => {
@@ -221,6 +192,36 @@ fn subscribe_loop(
     }
 
     // stream.write_all(SAMPLE_RESPONSE);
+    Ok(())
+}
+
+fn publish(
+    con: &mut TcpStream,
+    req: &[RedisValue],
+    server: &Arc<Mutex<Server>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Some(channel) = req.get(1).and_then(RedisValue::as_str) else {
+        return Err("Lacking channel name".into());
+    };
+    let server_lock = server
+        .try_lock()
+        .map_err(|e| format!("Server lock failed {e:?}"))?;
+    let Some(message) = req.get(2).and_then(RedisValue::as_str) else {
+        return Err("Message was not supplied or was not a string".into());
+    };
+    if let Some(sub) = server_lock.subscribers.get(channel) {
+        eprintln!("publishing to {} subscribers...", sub.len());
+        for tx in sub {
+            if let Err(e) = tx.send(message.to_string()) {
+                eprintln!("Error sending a message to a subscriber: {e:?}");
+            }
+        }
+        serialize_str(con, "OK")?;
+    } else {
+        eprintln!("There were no subscribers to {}", channel);
+        // Having no subscribers is not an error.
+        serialize_str(con, "OK")?;
+    }
     Ok(())
 }
 
