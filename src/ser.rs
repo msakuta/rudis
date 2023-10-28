@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 
-
 #[allow(dead_code)]
 pub(crate) fn serialize_bulk_str(f: &mut impl std::io::Write, s: &str) -> std::io::Result<()> {
     write!(f, "${}\r\n", s.len())?;
