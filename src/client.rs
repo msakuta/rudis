@@ -5,24 +5,31 @@ mod de;
 mod redis_value;
 mod ser;
 
+use redis::Commands;
+
 use self::{de::deserialize, ser::serialize_str_array};
 
-// use std::time::Duration;
-
-// use redis::Commands;
-
-use std::{io::Read, net::TcpStream};
+use std::{net::TcpStream, time::Duration};
 
 fn main() {
-    // tcp_client().unwrap();
-    do_something().unwrap();
+    let mut args = std::env::args();
+    let program = args.next();
+    let Some(app) = args.next() else {
+        println!("usage: {} {{basic|sub|pub}}", program.unwrap());
+        return;
+    };
+    match &app as &_ {
+        "basic" => tcp_client().unwrap(),
+        "sub" => simple_subscriber().unwrap(),
+        "pub" => simple_publisher().unwrap(),
+        _ => println!("Please specify basic, sub or pub"),
+    }
 }
 
 fn tcp_client() -> Result<(), Box<dyn std::error::Error>> {
     let mut con = TcpStream::connect("localhost:7878")?;
     println!("Asking to GET hey");
     serialize_str_array(&mut con, &["GET", "hey"])?;
-    let mut buf = [0u8; 128];
     let resp = deserialize(&mut con)?;
     println!("Got some answer: {resp:?}");
 
@@ -45,7 +52,7 @@ fn tcp_client() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[allow(dead_code)]
-fn do_something() -> redis::RedisResult<()> {
+fn simple_subscriber() -> redis::RedisResult<()> {
     let client = redis::Client::open("redis://127.0.0.1:7878/")?;
     let mut con = client.get_connection()?;
     let mut pubsub = con.as_pubsub();
@@ -66,5 +73,15 @@ fn do_something() -> redis::RedisResult<()> {
         // std::thread::sleep(Duration::from_secs(1));
     }
 
+    Ok(())
+}
+
+fn simple_publisher() -> redis::RedisResult<()> {
+    let client = redis::Client::open("redis://127.0.0.1:7878/")?;
+    let mut con = client.get_connection()?;
+    loop {
+        con.publish("channel", "Hey from Rust")?;
+        std::thread::sleep(Duration::from_secs(1));
+    }
     Ok(())
 }
