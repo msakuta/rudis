@@ -1,6 +1,10 @@
 //! A redis client to test the server.
 //! Note that it uses redis crate for the sake of testing since we focus on implementing the server.
 
+mod ser;
+
+use self::ser::serialize_array;
+
 // use std::time::Duration;
 
 // use redis::Commands;
@@ -18,24 +22,24 @@ fn main() {
 fn tcp_client() -> Result<(), Box<dyn std::error::Error>> {
     let mut con = TcpStream::connect("localhost:7878")?;
     println!("Asking to GET hey");
-    con.write_all(b"*2\r\n+GET\r\n+hey\r\n")?;
+    serialize_array(&mut con, &["GET", "hey"])?;
     let mut buf = [0u8; 128];
     let len = con.read(&mut buf)?;
     let resp = std::str::from_utf8(&buf[..len]);
     println!("Got some answer: {resp:?}");
 
     println!("Asking to SET hey");
-    con.write_all(b"*3\r\n+SET\r\n+hey\r\n+42\r\n")?;
+    serialize_array(&mut con, &["SET", "hey", "42"])?;
     let len = con.read(&mut buf)?;
     let resp = std::str::from_utf8(&buf[..len]);
     println!("Got some answer: {resp:?}");
 
-    con.write_all(b"*2\r\n+GET\r\n+hey\r\n")?;
+    serialize_array(&mut con, &["GET", "hey"])?;
     let len = con.read(&mut buf)?;
     let resp = std::str::from_utf8(&buf[..len]);
     println!("Got some answer: {resp:?}");
 
-    con.write_all(b"*2\r\n+SUBSCRIBE\r\n+channel\r\n")?;
+    serialize_array(&mut con, &["subscribe", "channel"])?;
     loop {
         let len = con.read(&mut buf)?;
         let resp = std::str::from_utf8(&buf[..len]);

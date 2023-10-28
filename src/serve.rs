@@ -1,3 +1,5 @@
+mod ser;
+
 use std::{
     collections::HashMap,
     io::{Read, Write},
@@ -5,6 +7,8 @@ use std::{
     sync::{mpsc::Receiver, Arc, Mutex},
     time::Duration,
 };
+
+use self::ser::{serialize_bulk_str, serialize_str, serialize_null};
 
 fn main() {
     let listener = TcpListener::bind("0.0.0.0:7878").unwrap();
@@ -91,7 +95,7 @@ fn process_thread(stream: TcpStream, _thread_id: usize, server: Arc<Mutex<Server
                 break 'parse_commands;
             };
             match command {
-                "SUBSCRIBE" => {
+                "subscribe" => {
                     let rx = server
                         .lock()
                         .ok()
@@ -180,35 +184,6 @@ fn subscribe_loop(
     }
 
     // stream.write_all(SAMPLE_RESPONSE);
-    Ok(())
-}
-
-#[allow(dead_code)]
-fn serialize_bulk_str(f: &mut impl std::io::Write, s: &str) -> std::io::Result<()> {
-    write!(f, "${}\r\n", s.len())?;
-    write!(f, "{}\r\n", s)?;
-    Ok(())
-}
-
-fn serialize_str(f: &mut impl std::io::Write, s: &str) -> std::io::Result<()> {
-    write!(f, "+{}\r\n", s)?;
-    Ok(())
-}
-
-fn serialize_null(f: &mut impl std::io::Write) -> std::io::Result<()> {
-    write!(f, "$-1\r\n")
-}
-
-#[allow(dead_code)]
-fn serialize_map(
-    f: &mut impl std::io::Write,
-    map: &HashMap<String, String>,
-) -> std::io::Result<()> {
-    write!(f, "*{}\r\n", map.len())?;
-    for (k, v) in map {
-        serialize_str(f, k)?;
-        serialize_str(f, v)?;
-    }
     Ok(())
 }
 
