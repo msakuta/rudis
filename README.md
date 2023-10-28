@@ -2,7 +2,12 @@
 
 A fake redis server in Rust.
 
-The server publishes a channel named "channel" periodically.
+The server only implements commands below in [RESP2](https://redis.io/docs/reference/protocol-spec/) protocol.
+
+* GET
+* SET
+* PUBLISH
+* SUBSCRIBE
 
 It is a coding practice to make a redis compatible server.
 Do not use this in production.
