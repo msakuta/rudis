@@ -63,29 +63,11 @@ fn clock(server: Arc<Mutex<Server>>) {
     }
 }
 
-fn process_thread(stream: TcpStream, _thread_id: usize, server: Arc<Mutex<Server>>) {
+fn process_thread(mut stream: TcpStream, _thread_id: usize, server: Arc<Mutex<Server>>) {
     println!("Connection established!");
 
-    let mut reader = stream;
-
-    // let mut buf = vec![0u8; 32];
-    // while let Ok(_) = reader.read(&mut buf) {
-    //     match std::str::from_utf8(&buf) {
-    //         Ok(s) => println!("read: {s:?}"),
-    //         Err(_) => println!("read(non-utf8): {buf:?}"),
-    //     }
-    // }
-    // let mut all = String::new();
-    // let Ok(_) = reader.read_to_string(&mut all) else { continue };
-    // println!("Request: {all:?}");
-    // let mut line = String::new();
-    // let Ok(redis_request) = reader
-    //     .read_line(&mut line) else { continue; };
-
-    // println!("Request: {redis_request:?}");
-
     loop {
-        let redis_request = match deserialize(&mut reader) {
+        let redis_request = match deserialize(&mut stream) {
             Ok(r) => r,
             Err(e) => {
                 eprintln!("Deserialize error: {e:?}");
@@ -102,13 +84,13 @@ fn process_thread(stream: TcpStream, _thread_id: usize, server: Arc<Mutex<Server
             };
             match &command.to_uppercase() as &_ {
                 "SUBSCRIBE" => {
-                    if let Err(e) = subscribe(&mut reader, &req, &server) {
-                        respond_error(&mut reader, &e.to_string());
+                    if let Err(e) = subscribe(&mut stream, &req, &server) {
+                        respond_error(&mut stream, &e.to_string());
                     }
                 }
                 "PUBLISH" => {
-                    if let Err(e) = publish(&mut reader, &req, &server) {
-                        respond_error(&mut reader, &e.to_string());
+                    if let Err(e) = publish(&mut stream, &req, &server) {
+                        respond_error(&mut stream, &e.to_string());
                     }
                 }
                 "GET" => {
@@ -118,11 +100,11 @@ fn process_thread(stream: TcpStream, _thread_id: usize, server: Arc<Mutex<Server
                         .zip(req.get(1).and_then(RedisValue::as_str))
                     {
                         if let Some(value) = server.data.get(key) {
-                            if let Err(e) = serialize_str(&mut reader, value) {
+                            if let Err(e) = serialize_str(&mut stream, value) {
                                 eprintln!("Error: {e:?}");
                             }
                         } else {
-                            if let Err(e) = serialize_null(&mut reader) {
+                            if let Err(e) = serialize_null(&mut stream) {
                                 eprintln!("Error: {e:?}");
                             }
                             println!("Wrote null");
@@ -137,7 +119,7 @@ fn process_thread(stream: TcpStream, _thread_id: usize, server: Arc<Mutex<Server
                         .zip(req.get(2).and_then(RedisValue::as_str))
                     {
                         server.data.insert(key.to_string(), value.to_string());
-                        if let Err(e) = serialize_str(&mut reader, "OK") {
+                        if let Err(e) = serialize_str(&mut stream, "OK") {
                             eprintln!("Error: {e:?}");
                         }
                     }
